@@ -939,6 +939,22 @@ pub fn vtrace_print[T](file string, fn_name string, line int, depth int, val T) 
 	os.write_file(output_path, out_lines.join('\n')) or { return err }
 }
 
+fn has_main_fn(dir_path string) bool {
+	files := os.ls(dir_path) or { return false }
+	for file in files {
+		if file.ends_with('.v') && file != 'vtrace_helpers.v' {
+			lines := os.read_lines(os.join_path(dir_path, file)) or { continue }
+			for line in lines {
+				trimmed := line.trim_space()
+				if trimmed.starts_with('fn main(') || trimmed.starts_with('pub fn main(') || trimmed.starts_with('fn main ') || trimmed.starts_with('pub fn main ') {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 fn main() {
 	if os.args.len < 2 {
 		println('Usage: vtrace [-bw] [-c] <file_or_directory> [compiler_flags] [-- program_arguments]')
@@ -1030,6 +1046,12 @@ fn main() {
 	} else {
 		println('Instrumenting file: ${target_path} ...')
 		instrument_single_file(target_path, temp_dir_path, use_color)!
+	}
+
+	if !has_main_fn(temp_dir_path) {
+		eprintln('Error: No `main` function found in the target program.')
+		os.rmdir_all(temp_dir_path) or {}
+		return
 	}
 
 	mut temp_exe := ''
