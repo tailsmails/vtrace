@@ -393,6 +393,55 @@ fn find_module_name_of_file(file_path string) string {
 	return 'main'
 }
 
+fn is_func_call_statement(line string) bool {
+	trimmed := line.trim_space()
+	if trimmed == '' {
+		return false
+	}
+	if trimmed.contains(':=') || trimmed.contains('+=') || trimmed.contains('-=') || trimmed.contains('*=') || trimmed.contains('/=') {
+		return false
+	}
+	if trimmed.contains('=') {
+		mut has_assignment := false
+		for i := 0; i < trimmed.len - 1; i++ {
+			if trimmed[i] == `=` {
+				if trimmed[i+1] != `=` && (i == 0 || (trimmed[i-1] != `!` && trimmed[i-1] != `<` && trimmed[i-1] != `>` && trimmed[i-1] != `=`)) {
+					has_assignment = true
+					break
+				}
+			}
+		}
+		if has_assignment {
+			return false
+		}
+	}
+
+	invalid_starts := ['if', 'for', 'return', 'fn', 'pub fn', 'import', 'const', 'struct', 'module', 'mut', 'pub', 'else', 'match', 'case', 'default:', 'select', 'lock', 'rlock']
+	for kw in invalid_starts {
+		if trimmed.starts_with(kw + ' ') || trimmed.starts_with(kw + '{') || trimmed.starts_with(kw + '(') || trimmed == kw {
+			return false
+		}
+	}
+
+	if trimmed.starts_with('print(') || trimmed.starts_with('println(') {
+		return false
+	}
+
+	if trimmed.contains('<-') {
+		return true
+	}
+
+	if !trimmed.contains('(') {
+		return false
+	}
+
+	if trimmed.ends_with(')') || trimmed.ends_with('{') {
+		return true
+	}
+	
+	return false
+}
+
 fn get_helpers_content(mod_name string, use_color bool, log_file string, silent bool) string {
 	color_str := use_color.str()
 	silent_str := silent.str()
@@ -688,13 +737,22 @@ fn instrument_file(src_path string, dest_path string, use_color bool, auto_confi
 			   !trimmed.starts_with('@[') && 
 			   !is_fn_decl(trimmed) {
 				
+				mut is_candidate := false
 				if !is_block_start(trimmed, match_brace_level > 0) && !trimmed.starts_with('return') && !trimmed.ends_with('{') {
 					if !trimmed.contains('print(') && !trimmed.contains('println(') {
 						if trimmed != 'continue' && trimmed != 'break' && !trimmed.starts_with('continue ') && !trimmed.starts_with('break ') {
-							if match_brace_level == 0 || brace_count > match_brace_level {
-								insert_after = true
-							}
+							is_candidate = true
 						}
+					}
+				}
+
+				if is_func_call_statement(trimmed) && !trimmed.ends_with('{') {
+					is_candidate = true
+				}
+
+				if is_candidate {
+					if match_brace_level == 0 || brace_count > match_brace_level {
+						insert_after = true
 					}
 				}
 			}
