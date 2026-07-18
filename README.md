@@ -9,7 +9,7 @@ An automated execution tracer and step-by-step source code instrumenter for the 
 Run this one-liner command to update your system package list, install compiler dependencies, build V from source (if not already installed), clone this repository, compile the tool with production optimizations, and link it globally:
 
 ```bash
-apt update -y && apt install -y git clang make && if ! command -v v >/dev/null 2>&1; then git clone --depth=1 https://github.com/vlang/v && cd v && make && ./v symlink && cd ..; fi && git clone --depth=1 https://github.com/tailsmails/vtrace && cd vtrace && v -prod vtrace.v -o vtrace && ln -sf $(pwd)/vtrace $PREFIX/bin/fastgit
+apt update -y && apt install -y git clang make && if ! command -v v >/dev/null 2>&1; then git clone --depth=1 https://github.com/vlang/v && cd v && make && ./v symlink && cd ..; fi && git clone --depth=1 https://github.com/tailsmails/vtrace && cd vtrace && v -prod vtrace.v -o vtrace && ln -sf $(pwd)/vtrace $PREFIX/bin/vtrace
 ```
 
 ---
