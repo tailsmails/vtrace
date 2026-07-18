@@ -489,7 +489,10 @@ pub fn vtrace_print[T](file string, fn_name string, line int, depth int, val T) 
 	os.write_file(path, content) or { return err }
 }
 
-fn instrument_file(src_path string, dest_path string, use_color bool) ! {
+fn instrument_file(src_path string, dest_path string, use_color bool, auto_confirm bool) ! {
+	if auto_confirm {
+		os.execute('v fmt -w "' + src_path + '"')
+	}
 	os.cp(src_path, dest_path) or { return err }
 	os.execute('v fmt -w "' + dest_path + '"')
 	lines := os.read_lines(dest_path) or { return err }
@@ -720,26 +723,26 @@ fn instrument_file(src_path string, dest_path string, use_color bool) ! {
 	os.write_file(dest_path, output_lines.join('\n')) or { return err }
 }
 
-fn instrument_single_file(src_file string, temp_dir string, use_color bool) ! {
+fn instrument_single_file(src_file string, temp_dir string, use_color bool, auto_confirm bool) ! {
 	if !os.exists(temp_dir) {
 		os.mkdir_all(temp_dir) or { return err }
 	}
 	file_name := os.file_name(src_file)
 	dest_file := os.join_path(temp_dir, file_name)
-	instrument_file(src_file, dest_file, use_color)!
+	instrument_file(src_file, dest_file, use_color, auto_confirm)!
 
 	mod_name := find_module_name_of_file(src_file)
 	helpers_path := os.join_path(temp_dir, 'vtrace_helpers.v')
 	write_helpers_file(helpers_path, mod_name, use_color)!
 }
 
-fn walk_and_instrument(src string, dest string, use_color bool) ! {
+fn walk_and_instrument(src string, dest string, use_color bool, auto_confirm bool) ! {
 	current_exec := os.file_name(os.executable())
 	current_exec_source := current_exec.replace('.exe', '') + '.v'
-	walk_and_instrument_internal(src, dest, use_color, current_exec, current_exec_source)!
+	walk_and_instrument_internal(src, dest, use_color, auto_confirm, current_exec, current_exec_source)!
 }
 
-fn walk_and_instrument_internal(src string, dest string, use_color bool, current_exec string, current_exec_source string) ! {
+fn walk_and_instrument_internal(src string, dest string, use_color bool, auto_confirm bool, current_exec string, current_exec_source string) ! {
 	if !os.exists(dest) {
 		os.mkdir_all(dest) or { return err }
 	}
@@ -755,14 +758,14 @@ fn walk_and_instrument_internal(src string, dest string, use_color bool, current
 			if file == '.vtrace_temp' {
 				continue
 			}
-			walk_and_instrument_internal(src_path, dest_path, use_color, current_exec, current_exec_source)!
+			walk_and_instrument_internal(src_path, dest_path, use_color, auto_confirm, current_exec, current_exec_source)!
 		} else {
 			if file == current_exec || file == current_exec_source {
 				continue
 			}
 			if file.ends_with('.v') {
 				has_v_files = true
-				instrument_file(src_path, dest_path, use_color)!
+				instrument_file(src_path, dest_path, use_color, auto_confirm)!
 			} else {
 				os.cp(src_path, dest_path) or { return err }
 			}
@@ -822,7 +825,9 @@ fn generate_self_contained_vt_v(instrumented_file_path string, output_path strin
 		if !has_time {
 			prepended << 'import time'
 		}
-		prepended << out_lines
+		for line in out_lines {
+			prepended << line
+		}
 		out_lines = prepended.clone()
 	}
 
@@ -957,12 +962,13 @@ fn has_main_fn(dir_path string) bool {
 
 fn main() {
 	if os.args.len < 2 {
-		println('Usage: vtrace [-bw] [-c] <file_or_directory> [compiler_flags] [-- program_arguments]')
+		println('Usage: vtrace [-bw] [-c] [-y] <file_or_directory> [compiler_flags] [-- program_arguments]')
 		return
 	}
 
 	mut use_color := true
 	mut only_compile := false
+	mut auto_confirm := false
 	mut file_index := 1
 
 	for file_index < os.args.len {
@@ -973,13 +979,16 @@ fn main() {
 		} else if arg == '-c' {
 			only_compile = true
 			file_index++
+		} else if arg == '-y' {
+			auto_confirm = true
+			file_index++
 		} else {
 			break
 		}
 	}
 
 	if file_index >= os.args.len {
-		println('Usage: vtrace [-bw] [-c] <file_or_directory> [compiler_flags] [-- program_arguments]')
+		println('Usage: vtrace [-bw] [-c] [-y] <file_or_directory> [compiler_flags] [-- program_arguments]')
 		return
 	}
 
@@ -1034,6 +1043,13 @@ fn main() {
 		}
 	}
 
+	if !auto_confirm {
+		ans := os.input('Do you want to format your original V files using `v fmt`? [y/N]: ').trim_space().to_lower()
+		if ans == 'y' || ans == 'yes' {
+			auto_confirm = true
+		}
+	}
+
 	temp_dir_path := os.join_path(src_dir, '.vtrace_temp')
 
 	if os.exists(temp_dir_path) {
@@ -1042,10 +1058,10 @@ fn main() {
 
 	if is_dir {
 		println('Walking and instrumenting directory: ${src_dir} ...')
-		walk_and_instrument(src_dir, temp_dir_path, use_color)!
+		walk_and_instrument(src_dir, temp_dir_path, use_color, auto_confirm)!
 	} else {
 		println('Instrumenting file: ${target_path} ...')
-		instrument_single_file(target_path, temp_dir_path, use_color)!
+		instrument_single_file(target_path, temp_dir_path, use_color, auto_confirm)!
 	}
 
 	if !has_main_fn(temp_dir_path) {
