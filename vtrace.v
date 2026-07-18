@@ -371,12 +371,16 @@ fn find_module_name_of_file(file_path string) string {
 	return 'main'
 }
 
-fn write_helpers_file(path string, mod_name string, use_color bool) ! {
+fn get_helpers_content(mod_name string, use_color bool, log_file string, silent bool) string {
 	color_str := use_color.str()
-	content := 'module ${mod_name}
+	silent_str := silent.str()
+	escaped_log_file := log_file.replace('\\', '\\\\').replace('\'', '\\\'')
+	return 'module ${mod_name}
 
 import time
 import sync
+import os
+import term
 
 __global (
 	vtrace_mutex sync.Mutex
@@ -387,6 +391,38 @@ fn init() {
 }
 
 const vtrace_color = ${color_str}
+const vtrace_silent = ${silent_str}
+const vtrace_log_file = \'${escaped_log_file}\'
+
+fn vtrace_output(text string, is_ln bool) {
+	if !vtrace_silent {
+		if is_ln {
+			eprintln(text)
+		} else {
+			eprint(text)
+		}
+	}
+	if vtrace_log_file.len > 0 {
+		clean_text := term.strip_ansi(text)
+		mut f := os.open_append(vtrace_log_file) or { return }
+		if is_ln {
+			f.writeln(clean_text) or {}
+		} else {
+			f.write_string(clean_text) or {}
+		}
+		f.close()
+	}
+}
+
+pub fn vtrace_enter(call_info string) {
+	vtrace_mutex.@lock()
+	mut text := "┌── Entering " + call_info
+	if vtrace_color {
+		text = "\\x1b[2m┌──\\x1b[0m \\x1b[33mEntering " + call_info + "\\x1b[0m"
+	}
+	vtrace_output(text, true)
+	vtrace_mutex.unlock()
+}
 
 pub fn vtrace_log(file string, fn_name string, line int, depth int, elapsed u64, extra string) {
 	vtrace_mutex.@lock()
@@ -419,15 +455,15 @@ pub fn vtrace_log(file string, fn_name string, line int, depth int, elapsed u64,
 		
 		if extra.len > 0 {
 			colored_extra := "-> \\x1b[35m" + extra + "\\x1b[0m"
-			eprintln(colored_prefix + colored_fn + " " + colored_clock + " " + colored_file_line + " " + colored_time + " " + colored_extra)
+			vtrace_output(colored_prefix + colored_fn + " " + colored_clock + " " + colored_file_line + " " + colored_time + " " + colored_extra, true)
 		} else {
-			eprintln(colored_prefix + colored_fn + " " + colored_clock + " " + colored_file_line + " " + colored_time)
+			vtrace_output(colored_prefix + colored_fn + " " + colored_clock + " " + colored_file_line + " " + colored_time, true)
 		}
 	} else {
 		if extra.len > 0 {
-			eprintln(prefix + "[" + fn_name + "] [" + clock + "] " + file + ":" + line.str() + " (" + time_str + ") -> " + extra)
+			vtrace_output(prefix + "[" + fn_name + "] [" + clock + "] " + file + ":" + line.str() + " (" + time_str + ") -> " + extra, true)
 		} else {
-			eprintln(prefix + "[" + fn_name + "] [" + clock + "] " + file + ":" + line.str() + " (" + time_str + ")")
+			vtrace_output(prefix + "[" + fn_name + "] [" + clock + "] " + file + ":" + line.str() + " (" + time_str + ")", true)
 		}
 	}
 	vtrace_mutex.unlock()
@@ -452,9 +488,9 @@ pub fn vtrace_println[T](file string, fn_name string, line int, depth int, val T
 		colored_prefix := "\\x1b[2m" + prefix + "\\x1b[0m"
 		colored_fn := "\\x1b[33m[" + fn_name + "]\\x1b[0m"
 		colored_clock := "\\x1b[90m[" + clock + "]\\x1b[0m"
-		eprintln(colored_prefix + colored_fn + " " + colored_clock + " \\x1b[1m\${val}\\x1b[0m")
+		vtrace_output(colored_prefix + colored_fn + " " + colored_clock + " \\x1b[1m\${val}\\x1b[0m", true)
 	} else {
-		eprintln(prefix + "[" + fn_name + "] [" + clock + "] \${val}")
+		vtrace_output(prefix + "[" + fn_name + "] [" + clock + "] \${val}", true)
 	}
 	vtrace_mutex.unlock()
 }
@@ -478,13 +514,17 @@ pub fn vtrace_print[T](file string, fn_name string, line int, depth int, val T) 
 		colored_prefix := "\\x1b[2m" + prefix + "\\x1b[0m"
 		colored_fn := "\\x1b[33m[" + fn_name + "]\\x1b[0m"
 		colored_clock := "\\x1b[90m[" + clock + "]\\x1b[0m"
-		eprint(colored_prefix + colored_fn + " " + colored_clock + " \\x1b[1m\${val}\\x1b[0m")
+		vtrace_output(colored_prefix + colored_fn + " " + colored_clock + " \\x1b[1m\${val}\\x1b[0m", false)
 	} else {
-		eprint(prefix + "[" + fn_name + "] [" + clock + "] \${val}")
+		vtrace_output(prefix + "[" + fn_name + "] [" + clock + "] \${val}", false)
 	}
 	vtrace_mutex.unlock()
 }
 '
+}
+
+fn write_helpers_file(path string, mod_name string, use_color bool, log_file string, silent bool) ! {
+	content := get_helpers_content(mod_name, use_color, log_file, silent)
 	os.write_file(path, content) or { return err }
 }
 
@@ -605,12 +645,7 @@ fn instrument_file(src_path string, dest_path string, use_color bool, auto_confi
 			indentation := get_indentation(line) + '\t'
 			output_lines << indentation + 'mut vtrace_t := time.sys_mono_now()'
 			output_lines << indentation + '_ = vtrace_t'
-			
-			if use_color {
-				output_lines << indentation + "eprintln('\\x1b[2m┌──\\x1b[0m \\x1b[33mEntering " + call_info + "\\x1b[0m')"
-			} else {
-				output_lines << indentation + "eprintln('┌── Entering " + call_info + "')"
-			}
+			output_lines << indentation + "vtrace_enter('" + escape_quotes(call_info) + "')"
 
 			brace_count += (num_open - num_close)
 			continue
@@ -735,7 +770,7 @@ fn instrument_file(src_path string, dest_path string, use_color bool, auto_confi
 	os.write_file(dest_path, output_lines.join('\n')) or { return err }
 }
 
-fn instrument_single_file(src_file string, temp_dir string, use_color bool, auto_confirm bool) ! {
+fn instrument_single_file(src_file string, temp_dir string, use_color bool, auto_confirm bool, log_file string, silent bool) ! {
 	if !os.exists(temp_dir) {
 		os.mkdir_all(temp_dir) or { return err }
 	}
@@ -763,16 +798,16 @@ fn instrument_single_file(src_file string, temp_dir string, use_color bool, auto
 
 	mod_name := find_module_name_of_file(src_file)
 	helpers_path := os.join_path(temp_dir, 'vtrace_helpers.v')
-	write_helpers_file(helpers_path, mod_name, use_color)!
+	write_helpers_file(helpers_path, mod_name, use_color, log_file, silent)!
 }
 
-fn walk_and_instrument(src string, dest string, use_color bool, auto_confirm bool) ! {
+fn walk_and_instrument(src string, dest string, use_color bool, auto_confirm bool, log_file string, silent bool) ! {
 	current_exec := os.file_name(os.executable())
 	current_exec_source := current_exec.replace('.exe', '') + '.v'
-	walk_and_instrument_internal(src, dest, use_color, auto_confirm, current_exec, current_exec_source)!
+	walk_and_instrument_internal(src, dest, use_color, auto_confirm, log_file, silent, current_exec, current_exec_source)!
 }
 
-fn walk_and_instrument_internal(src string, dest string, use_color bool, auto_confirm bool, current_exec string, current_exec_source string) ! {
+fn walk_and_instrument_internal(src string, dest string, use_color bool, auto_confirm bool, log_file string, silent bool, current_exec string, current_exec_source string) ! {
 	if !os.exists(dest) {
 		os.mkdir_all(dest) or { return err }
 	}
@@ -788,7 +823,7 @@ fn walk_and_instrument_internal(src string, dest string, use_color bool, auto_co
 			if file == '.vtrace_temp' {
 				continue
 			}
-			walk_and_instrument_internal(src_path, dest_path, use_color, auto_confirm, current_exec, current_exec_source)!
+			walk_and_instrument_internal(src_path, dest_path, use_color, auto_confirm, log_file, silent, current_exec, current_exec_source)!
 		} else {
 			if file == current_exec || file == current_exec_source {
 				continue
@@ -805,17 +840,19 @@ fn walk_and_instrument_internal(src string, dest string, use_color bool, auto_co
 	if has_v_files {
 		mod_name := find_module_name(src)
 		helpers_path := os.join_path(dest, 'vtrace_helpers.v')
-		write_helpers_file(helpers_path, mod_name, use_color)!
+		write_helpers_file(helpers_path, mod_name, use_color, log_file, silent)!
 	}
 }
 
-fn generate_self_contained_vt_v(instrumented_file_path string, output_path string, use_color bool) ! {
+fn generate_self_contained_vt_v(instrumented_file_path string, output_path string, use_color bool, log_file string, silent bool) ! {
 	lines := os.read_lines(instrumented_file_path) or { return err }
 	mut out_lines := []string{}
 	mut inserted_imports := false
 
 	mut has_sync := false
 	mut has_time := false
+	mut has_os := false
+	mut has_term := false
 	for line in lines {
 		trimmed := line.trim_space()
 		if trimmed.starts_with('import ') {
@@ -826,6 +863,10 @@ fn generate_self_contained_vt_v(instrumented_file_path string, output_path strin
 					has_sync = true
 				} else if mod == 'time' {
 					has_time = true
+				} else if mod == 'os' {
+					has_os = true
+				} else if mod == 'term' {
+					has_term = true
 				}
 			}
 		}
@@ -843,6 +884,14 @@ fn generate_self_contained_vt_v(instrumented_file_path string, output_path strin
 				out_lines << 'import time'
 				has_time = true
 			}
+			if !has_os {
+				out_lines << 'import os'
+				has_os = true
+			}
+			if !has_term {
+				out_lines << 'import term'
+				has_term = true
+			}
 			inserted_imports = true
 		}
 	}
@@ -855,121 +904,22 @@ fn generate_self_contained_vt_v(instrumented_file_path string, output_path strin
 		if !has_time {
 			prepended << 'import time'
 		}
+		if !has_os {
+			prepended << 'import os'
+		}
+		if !has_term {
+			prepended << 'import term'
+		}
 		for line in out_lines {
 			prepended << line
 		}
 		out_lines = prepended.clone()
 	}
 
-	color_str := use_color.str()
-	helpers_content := '
-__global (
-	vtrace_mutex sync.Mutex
-)
+	helpers_content_raw := get_helpers_content('', use_color, log_file, silent)
+	idx := helpers_content_raw.index('\n') or { 0 }
+	helpers_content := helpers_content_raw.substr(idx + 1, helpers_content_raw.len)
 
-fn init() {
-	vtrace_mutex.init()
-}
-
-const vtrace_color = ${color_str}
-
-pub fn vtrace_log(file string, fn_name string, line int, depth int, elapsed u64, extra string) {
-	vtrace_mutex.@lock()
-	mut prefix := ""
-	if depth > 0 {
-		for _ in 0 .. depth {
-			prefix += "│  "
-		}
-	}
-	prefix += "├── "
-
-	mut time_str := ""
-	if elapsed < 1000 {
-		time_str = "\${elapsed} ns"
-	} else if elapsed < 1000000 {
-		time_str = "\${f64(elapsed) / 1000.0:.3f} μs"
-	} else {
-		time_str = "\${f64(elapsed) / 1000000.0:.3f} ms"
-	}
-
-	t_now := time.now().format_ss_milli()
-	clock := t_now.substr(11, t_now.len)
-
-	if vtrace_color {
-		colored_prefix := "\\x1b[2m" + prefix + "\\x1b[0m"
-		colored_fn := "\\x1b[33m[" + fn_name + "]\\x1b[0m"
-		colored_clock := "\\x1b[90m[" + clock + "]\\x1b[0m"
-		colored_file_line := "\\x1b[36m" + file + ":" + line.str() + "\\x1b[0m"
-		colored_time := "\\x1b[32m(" + time_str + ")\\x1b[0m"
-		
-		if extra.len > 0 {
-			colored_extra := "-> \\x1b[35m" + extra + "\\x1b[0m"
-			eprintln(colored_prefix + colored_fn + " " + colored_clock + " " + colored_file_line + " " + colored_time + " " + colored_extra)
-		} else {
-			eprintln(colored_prefix + colored_fn + " " + colored_clock + " " + colored_file_line + " " + colored_time)
-		}
-	} else {
-		if extra.len > 0 {
-			eprintln(prefix + "[" + fn_name + "] [" + clock + "] " + file + ":" + line.str() + " (" + time_str + ") -> " + extra)
-		} else {
-			eprintln(prefix + "[" + fn_name + "] [" + clock + "] " + file + ":" + line.str() + " (" + time_str + ")")
-		}
-	}
-	vtrace_mutex.unlock()
-}
-
-pub fn vtrace_println[T](file string, fn_name string, line int, depth int, val T) {
-	_ = file
-	_ = line
-	vtrace_mutex.@lock()
-	mut prefix := ""
-	if depth > 0 {
-		for _ in 0 .. depth {
-			prefix += "│  "
-		}
-	}
-	prefix += "├── "
-
-	t_now := time.now().format_ss_milli()
-	clock := t_now.substr(11, t_now.len)
-
-	if vtrace_color {
-		colored_prefix := "\\x1b[2m" + prefix + "\\x1b[0m"
-		colored_fn := "\\x1b[33m[" + fn_name + "]\\x1b[0m"
-		colored_clock := "\\x1b[90m[" + clock + "]\\x1b[0m"
-		eprintln(colored_prefix + colored_fn + " " + colored_clock + " \\x1b[1m\${val}\\x1b[0m")
-	} else {
-		eprintln(prefix + "[" + fn_name + "] [" + clock + "] \${val}")
-	}
-	vtrace_mutex.unlock()
-}
-
-pub fn vtrace_print[T](file string, fn_name string, line int, depth int, val T) {
-	_ = file
-	_ = line
-	vtrace_mutex.@lock()
-	mut prefix := ""
-	if depth > 0 {
-		for _ in 0 .. depth {
-			prefix += "│  "
-		}
-	}
-	prefix += "├── "
-
-	t_now := time.now().format_ss_milli()
-	clock := t_now.substr(11, t_now.len)
-
-	if vtrace_color {
-		colored_prefix := "\\x1b[2m" + prefix + "\\x1b[0m"
-		colored_fn := "\\x1b[33m[" + fn_name + "]\\x1b[0m"
-		colored_clock := "\\x1b[90m[" + clock + "]\\x1b[0m"
-		eprint(colored_prefix + colored_fn + " " + colored_clock + " \\x1b[1m\${val}\\x1b[0m")
-	} else {
-		eprint(prefix + "[" + fn_name + "] [" + clock + "] \${val}")
-	}
-	vtrace_mutex.unlock()
-}
-'
 	out_lines << helpers_content
 	os.write_file(output_path, out_lines.join('\n')) or { return err }
 }
@@ -992,13 +942,15 @@ fn has_main_fn(dir_path string) bool {
 
 fn main() {
 	if os.args.len < 2 {
-		println('Usage: vtrace [-bw] [-c] [-y] <file_or_directory> [compiler_flags] [-- program_arguments]')
+		println('Usage: vtrace [-bw] [-c] [-y] [-s <log_file>] [-ss <log_file>] <file_or_directory> [compiler_flags] [-- program_arguments]')
 		return
 	}
 
 	mut use_color := true
 	mut only_compile := false
 	mut auto_confirm := false
+	mut silent_mode := false
+	mut log_file_path := ''
 	mut file_index := 1
 
 	for file_index < os.args.len {
@@ -1012,13 +964,29 @@ fn main() {
 		} else if arg == '-y' {
 			auto_confirm = true
 			file_index++
+		} else if arg == '-s' {
+			if file_index + 1 >= os.args.len {
+				println('Error: -s requires a log file path.')
+				return
+			}
+			log_file_path = os.args[file_index + 1]
+			silent_mode = false
+			file_index += 2
+		} else if arg == '-ss' {
+			if file_index + 1 >= os.args.len {
+				println('Error: -ss requires a log file path.')
+				return
+			}
+			log_file_path = os.args[file_index + 1]
+			silent_mode = true
+			file_index += 2
 		} else {
 			break
 		}
 	}
 
 	if file_index >= os.args.len {
-		println('Usage: vtrace [-bw] [-c] [-y] <file_or_directory> [compiler_flags] [-- program_arguments]')
+		println('Usage: vtrace [-bw] [-c] [-y] [-s <log_file>] [-ss <log_file>] <file_or_directory> [compiler_flags] [-- program_arguments]')
 		return
 	}
 
@@ -1026,6 +994,15 @@ fn main() {
 	if !os.exists(target_path) {
 		println('Error: Path "${target_path}" does not exist.')
 		return
+	}
+
+	mut absolute_log_path := ''
+	if log_file_path.len > 0 {
+		if os.is_abs_path(log_file_path) {
+			absolute_log_path = log_file_path
+		} else {
+			absolute_log_path = os.join_path(os.getwd(), log_file_path)
+		}
 	}
 
 	mut compiler_flags := []string{}
@@ -1088,10 +1065,10 @@ fn main() {
 
 	if is_dir {
 		println('Walking and instrumenting directory: ${src_dir} ...')
-		walk_and_instrument(src_dir, temp_dir_path, use_color, auto_confirm)!
+		walk_and_instrument(src_dir, temp_dir_path, use_color, auto_confirm, absolute_log_path, silent_mode)!
 	} else {
 		println('Instrumenting file: ${target_path} ...')
-		instrument_single_file(target_path, temp_dir_path, use_color, auto_confirm)!
+		instrument_single_file(target_path, temp_dir_path, use_color, auto_confirm, absolute_log_path, silent_mode)!
 	}
 
 	if !has_main_fn(temp_dir_path) {
@@ -1139,7 +1116,7 @@ fn main() {
 	if !is_dir {
 		output_src_path := os.join_path(src_dir, program_name + '.vt.v')
 		println('Generating self-contained trace source file: ${output_src_path} ...')
-		generate_self_contained_vt_v(os.join_path(temp_dir_path, target_file_name), output_src_path, use_color)!
+		generate_self_contained_vt_v(os.join_path(temp_dir_path, target_file_name), output_src_path, use_color, absolute_log_path, silent_mode)!
 	}
 
 	if only_compile {
