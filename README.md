@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="example.jpg" alt="Example" width="400" />
+</div>
+
 # vtrace
 
 An automated execution tracer and step-by-step source code instrumenter for the V programming language. It modifies your V code at compile-time to log variable state changes, function entry scopes, line-by-line execution elapsed times, and thread-safe output formatting.
