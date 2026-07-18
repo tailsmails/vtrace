@@ -74,6 +74,7 @@ fn parse_fn_signature(line string) FnSignature {
 				clean_p = clean_p.substr(7, clean_p.len).trim_space()
 				is_shared = true
 			}
+			
 			is_chan := p_trimmed.contains('chan ') || p_trimmed.starts_with('chan ')
 			
 			parts_p := clean_p.split(' ')
@@ -489,7 +490,9 @@ pub fn vtrace_print[T](file string, fn_name string, line int, depth int, val T) 
 }
 
 fn instrument_file(src_path string, dest_path string, use_color bool) ! {
-	lines := os.read_lines(src_path) or { return err }
+	os.cp(src_path, dest_path) or { return err }
+	os.execute('v fmt -w "' + dest_path + '"')
+	lines := os.read_lines(dest_path) or { return err }
 	file_path := os.file_name(src_path)
 
 	mut final_lines := []LineWithMeta{}
@@ -507,8 +510,10 @@ fn instrument_file(src_path string, dest_path string, use_color bool) ! {
 	mut in_multiline_comment := false
 	mut current_fn_name := ''
 	mut match_brace_level := 0
+	
 	mut in_single_quote_global := false
 	mut in_double_quote_global := false
+
 	mut has_time_import := false
 	for line_meta in final_lines {
 		if line_meta.text.trim_space().starts_with('import time') {
@@ -519,7 +524,7 @@ fn instrument_file(src_path string, dest_path string, use_color bool) ! {
 	if !has_time_import {
 		output_lines << 'import time'
 	}
-	
+
 	mut local_chan_vars := []string{}
 
 	for line_meta in final_lines {
@@ -549,11 +554,13 @@ fn instrument_file(src_path string, dest_path string, use_color bool) ! {
 			}
 			continue
 		}
-		
+
 		was_in_string := in_single_quote_global || in_double_quote_global
+
 		num_open, num_close, new_single, new_double := count_braces_outside_strings(trimmed, in_single_quote_global, in_double_quote_global)
 		in_single_quote_global = new_single
 		in_double_quote_global = new_double
+		
 		is_in_string := was_in_string || in_single_quote_global || in_double_quote_global
 
 		if is_fn_decl(trimmed) {
@@ -600,9 +607,11 @@ fn instrument_file(src_path string, dest_path string, use_color bool) ! {
 		}
 
 		net_braces := num_open - num_close
+
 		is_block := is_block_start(trimmed, match_brace_level > 0)
+
 		mut insert_after := false
-		
+
 		if is_in_fn && init_depth == 0 && !is_in_string {
 			if trimmed != '' && 
 			   !trimmed.starts_with('//') && 
@@ -667,6 +676,7 @@ fn instrument_file(src_path string, dest_path string, use_color bool) ! {
 
 		if insert_after {
 			vars := extract_assigned_vars(trimmed)
+			
 			if trimmed.contains('chan ') {
 				for v in vars {
 					if v !in local_chan_vars {
@@ -674,7 +684,7 @@ fn instrument_file(src_path string, dest_path string, use_color bool) ! {
 					}
 				}
 			}
-			
+
 			mut clean_vars := []string{}
 			sig := parse_fn_signature(trimmed)
 			for v in vars {
@@ -698,7 +708,7 @@ fn instrument_file(src_path string, dest_path string, use_color bool) ! {
 			output_lines << indentation + "vtrace_log('" + file_path + "', '" + current_fn_name + "', " + line_num.str() + ", " + brace_count.str() + ", time.sys_mono_now() - vtrace_t, '" + extra_str + "')"
 			output_lines << indentation + "vtrace_t = time.sys_mono_now()"
 		}
-		
+
 		if match_brace_level > 0 && brace_count < match_brace_level {
 			match_brace_level = 0
 		}
@@ -770,6 +780,7 @@ fn generate_self_contained_vt_v(instrumented_file_path string, output_path strin
 	lines := os.read_lines(instrumented_file_path) or { return err }
 	mut out_lines := []string{}
 	mut inserted_imports := false
+
 	mut has_sync := false
 	mut has_time := false
 	for line in lines {
@@ -937,7 +948,7 @@ fn main() {
 	mut use_color := true
 	mut only_compile := false
 	mut file_index := 1
-	
+
 	for file_index < os.args.len {
 		arg := os.args[file_index]
 		if arg == '-bw' {
@@ -979,7 +990,7 @@ fn main() {
 			}
 		}
 	}
-	
+
 	mut src_dir := ''
 	is_dir := os.is_dir(target_path)
 
@@ -991,7 +1002,7 @@ fn main() {
 			src_dir = '.'
 		}
 	}
-	
+
 	mut program_name := ''
 	mut target_file_name := ''
 	if is_dir {
@@ -1008,6 +1019,7 @@ fn main() {
 	}
 
 	temp_dir_path := os.join_path(src_dir, '.vtrace_temp')
+
 	if os.exists(temp_dir_path) {
 		os.rmdir_all(temp_dir_path) or {}
 	}
@@ -1019,7 +1031,7 @@ fn main() {
 		println('Instrumenting file: ${target_path} ...')
 		instrument_single_file(target_path, temp_dir_path, use_color)!
 	}
-	
+
 	mut temp_exe := ''
 	mut output_binary_name := program_name + '.vt'
 	$if windows {
@@ -1035,7 +1047,7 @@ fn main() {
 			temp_exe += '.exe'
 		}
 	}
-	
+
 	mut compile_parts := ['v']
 	if compiler_flags.len > 0 {
 		compile_parts << compiler_flags.join(' ')
@@ -1055,7 +1067,7 @@ fn main() {
 		os.rmdir_all(temp_dir_path) or {}
 		return
 	}
-	
+
 	if !is_dir {
 		output_src_path := os.join_path(src_dir, program_name + '.vt.v')
 		println('Generating self-contained trace source file: ${output_src_path} ...')
@@ -1073,7 +1085,7 @@ fn main() {
 		os.rmdir_all(temp_dir_path) or {}
 		return
 	}
-	
+
 	mut run_parts := ['"' + temp_exe + '"']
 	if program_args.len > 0 {
 		for arg in program_args {
@@ -1086,6 +1098,7 @@ fn main() {
 	println('-'.repeat(40))
 
 	exit_code := os.system(run_cmd)
+
 	os.rmdir_all(temp_dir_path) or {}
 
 	if exit_code != 0 {
