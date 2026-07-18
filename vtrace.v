@@ -163,7 +163,6 @@ fn count_braces_outside_strings(line string, in_single_quote bool, in_double_quo
 		}
 		if c == 34 && !single {
 			double = !double
-			continue
 		}
 		if !single && !double {
 			if c == 123 {
@@ -506,7 +505,26 @@ fn instrument_file(src_path string, dest_path string, use_color bool, auto_confi
 		}
 	}
 
+	mut has_time_import := false
+	mut has_module_decl := false
+	for line_meta in final_lines {
+		trimmed_line := line_meta.text.trim_space()
+		if trimmed_line.starts_with('import time') {
+			has_time_import = true
+		}
+		if trimmed_line.starts_with('module ') {
+			has_module_decl = true
+		}
+	}
+
 	mut output_lines := []string{}
+	mut time_imported := has_time_import
+
+	if !has_module_decl && !time_imported {
+		output_lines << 'import time'
+		time_imported = true
+	}
+
 	mut is_in_fn := false
 	mut brace_count := 0
 	mut init_depth := 0
@@ -516,17 +534,6 @@ fn instrument_file(src_path string, dest_path string, use_color bool, auto_confi
 	
 	mut in_single_quote_global := false
 	mut in_double_quote_global := false
-
-	mut has_time_import := false
-	for line_meta in final_lines {
-		if line_meta.text.trim_space().starts_with('import time') {
-			has_time_import = true
-			break
-		}
-	}
-	if !has_time_import {
-		output_lines << 'import time'
-	}
 
 	mut local_chan_vars := []string{}
 
@@ -677,6 +684,11 @@ fn instrument_file(src_path string, dest_path string, use_color bool, auto_confi
 		}
 		output_lines << rewritten_line
 
+		if trimmed.starts_with('module ') && !time_imported {
+			output_lines << 'import time'
+			time_imported = true
+		}
+
 		if insert_after {
 			vars := extract_assigned_vars(trimmed)
 			
@@ -730,6 +742,24 @@ fn instrument_single_file(src_file string, temp_dir string, use_color bool, auto
 	file_name := os.file_name(src_file)
 	dest_file := os.join_path(temp_dir, file_name)
 	instrument_file(src_file, dest_file, use_color, auto_confirm)!
+
+	src_dir := os.dir(src_file)
+	mut resolved_src_dir := src_dir
+	if resolved_src_dir == '' {
+		resolved_src_dir = '.'
+	}
+	current_exec := os.file_name(os.executable())
+	files := os.ls(resolved_src_dir) or { return err }
+	for file in files {
+		if file == current_exec {
+			continue
+		}
+		src_path := os.join_path(resolved_src_dir, file)
+		if !os.is_dir(src_path) && !file.ends_with('.v') {
+			dest_path := os.join_path(temp_dir, file)
+			os.cp(src_path, dest_path) or { return err }
+		}
+	}
 
 	mod_name := find_module_name_of_file(src_file)
 	helpers_path := os.join_path(temp_dir, 'vtrace_helpers.v')
