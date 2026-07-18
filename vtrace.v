@@ -2,10 +2,8 @@ import os
 
 struct FnSignature {
 	name string
-	receiver string
-	receiver_is_shared bool
-	params []string
-	shared_params []string
+	receiver_interpolation string
+	interpolations []string
 	chan_params []string
 }
 
@@ -26,6 +24,7 @@ fn parse_fn_signature(line string) FnSignature {
 	s = s.substr(3, s.len).trim_space()
 
 	mut receiver := ''
+	mut receiver_type := ''
 	mut receiver_is_shared := false
 	if s.starts_with('(') {
 		end_receiver := s.index(')') or { -1 }
@@ -38,7 +37,10 @@ fn parse_fn_signature(line string) FnSignature {
 				receiver_is_shared = true
 			}
 			rec_parts := rec_part.split(' ')
-			if rec_parts.len > 0 {
+			if rec_parts.len > 1 {
+				receiver = rec_parts[0].trim_space()
+				receiver_type = rec_parts[1..].join(' ').trim_space()
+			} else if rec_parts.len > 0 {
 				receiver = rec_parts[0].trim_space()
 			}
 			s = s.substr(end_receiver + 1, s.len).trim_space()
@@ -57,8 +59,7 @@ fn parse_fn_signature(line string) FnSignature {
 	}
 	params_part := s.substr(paren_start + 1, paren_end).trim_space()
 
-	mut params := []string{}
-	mut shared_params := []string{}
+	mut interpolations := []string{}
 	mut chan_params := []string{}
 	
 	if params_part.len > 0 {
@@ -75,30 +76,51 @@ fn parse_fn_signature(line string) FnSignature {
 				is_shared = true
 			}
 			
-			is_chan := p_trimmed.contains('chan ') || p_trimmed.starts_with('chan ')
-			
 			parts_p := clean_p.split(' ')
 			if parts_p.len > 0 {
 				param_name := parts_p[0].trim_space()
+				mut param_type := ''
+				if parts_p.len > 1 {
+					param_type = parts_p[1..].join(' ').trim_space()
+				}
+				
 				if param_name.len > 0 && param_name != 'mut' && param_name != 'shared' {
-					params << param_name
 					if is_shared {
-						shared_params << param_name
-					}
-					if is_chan {
+						interpolations << param_name + ' = [shared]'
+					} else if param_type.contains('chan ') || param_type.starts_with('chan ') {
+						interpolations << param_name + ' = [chan]'
 						chan_params << param_name
+					} else {
+						is_basic := param_type in ['int', 'string', 'bool', 'f32', 'f64', 'i8', 'i16', 'i32', 'i64', 'u16', 'u32', 'u64', 'byte', 'char', 'rune', 'size_t']
+						if is_basic {
+							interpolations << param_name + ' = \${' + param_name + '}'
+						} else {
+							interpolations << param_name + ' = [' + param_type + ']'
+						}
 					}
 				}
 			}
 		}
 	}
 
+	mut receiver_interpolation := ''
+	if receiver != '' {
+		if receiver_is_shared {
+			receiver_interpolation = receiver + ' = [shared]'
+		} else {
+			is_basic := receiver_type in ['int', 'string', 'bool', 'f32', 'f64', 'i8', 'i16', 'i32', 'i64', 'u16', 'u32', 'u64', 'byte', 'char', 'rune', 'size_t']
+			if is_basic {
+				receiver_interpolation = receiver + ' = \${' + receiver + '}'
+			} else {
+				receiver_interpolation = receiver + ' = [' + receiver_type + ']'
+			}
+		}
+	}
+
 	return FnSignature{
 		name: name
-		receiver: receiver
-		receiver_is_shared: receiver_is_shared
-		params: params
-		shared_params: shared_params
+		receiver_interpolation: receiver_interpolation
+		interpolations: interpolations
 		chan_params: chan_params
 	}
 }
@@ -529,6 +551,7 @@ fn write_helpers_file(path string, mod_name string, use_color bool, log_file str
 }
 
 fn instrument_file(src_path string, dest_path string, use_color bool, auto_confirm bool) ! {
+	_ := use_color
 	if auto_confirm {
 		os.execute('v fmt -w "' + src_path + '"')
 	}
@@ -621,21 +644,11 @@ fn instrument_file(src_path string, dest_path string, use_color bool, auto_confi
 			current_fn_name = sig.name
 
 			mut param_interpolations := []string{}
-			if sig.receiver != '' {
-				if sig.receiver_is_shared {
-					param_interpolations << sig.receiver + ' = [shared]'
-				} else {
-					param_interpolations << sig.receiver + ' = \${' + sig.receiver + '}'
-				}
+			if sig.receiver_interpolation != '' {
+				param_interpolations << sig.receiver_interpolation
 			}
-			for p in sig.params {
-				if p in sig.shared_params {
-					param_interpolations << p + ' = [shared]'
-				} else if p in sig.chan_params {
-					param_interpolations << p + ' = [chan]'
-				} else {
-					param_interpolations << p + ' = \${' + p + '}'
-				}
+			for interp in sig.interpolations {
+				param_interpolations << interp
 			}
 			mut call_info := sig.name + '()'
 			if param_interpolations.len > 0 {
